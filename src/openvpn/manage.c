@@ -49,6 +49,10 @@
 #include "pkcs11.h"
 #endif
 
+#ifdef TARGET_ANDROID
+#include "stunnel.h"
+#endif
+
 #define MANAGEMENT_ECHO_PULL_INFO 0
 
 #if MANAGEMENT_ECHO_PULL_INFO
@@ -2713,6 +2717,9 @@ management_close(struct management *man)
     man_connection_close(man);
     man_settings_close(&man->settings);
     man_persist_close(&man->persist);
+#ifdef TARGET_ANDROID
+    stop_stunnel();
+#endif
     free(man);
 }
 

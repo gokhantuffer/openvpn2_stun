@@ -167,6 +167,10 @@ struct connection_entry
 
     /* Allow only client that support resending the wrapped client key */
     bool tls_crypt_v2_force_cookie;
+#ifdef TARGET_ANDROID
+    int ttl;
+    const char *sni;
+#endif
 };
 
 struct remote_entry
@@ -701,6 +705,10 @@ struct options
 
     /* data channel crypto flags set by push/pull. Reuses the CO_* crypto_flags */
     unsigned int imported_protocol_flags;
+#ifdef TARGET_ANDROID
+    int ttl;
+    const char *sni;
+#endif
 };
 
 #define streq(x, y) (!strcmp((x), (y)))

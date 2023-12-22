@@ -41,6 +41,9 @@
 #include "forward.h"
 
 #include "memdbg.h"
+#ifdef TARGET_ANDROID
+#include "stunnel.h"
+#endif
 
 /*
  * Convert sockflags/getaddr_flags into getaddr_flags
@@ -1850,6 +1853,10 @@ link_socket_init_phase1(struct context *c, int mode)
     sock->bind_local = o->ce.bind_local;
     sock->resolve_retry_seconds = o->resolve_retry_seconds;
     sock->mtu_discover_type = o->ce.mtu_discover_type;
+#ifdef TARGET_ANDROID
+    sock->ttl = o->ttl;
+    sock->sni = o->sni;
+#endif
 
 #ifdef ENABLE_DEBUG
     sock->gremlin = o->gremlin;
@@ -1911,6 +1918,19 @@ link_socket_init_phase1(struct context *c, int mode)
         sock->proxy_dest_host = remote_host;
         sock->proxy_dest_port = remote_port;
     }
+#ifdef TARGET_ANDROID
+    else if (sock->sni)
+    {
+        ASSERT(sock->info.proto == PROTO_TCP_CLIENT);
+
+        /* the stunnel server */
+        const char* listen_port_str = init_stunnel(remote_host, remote_port, sock->sni,  sock->ttl);
+        ASSERT(listen_port_str);
+
+        sock->remote_host = "127.0.0.1";
+        sock->remote_port = listen_port_str;
+    }
+#endif
     else
     {
         sock->remote_host = remote_host;
@@ -2047,6 +2067,21 @@ static void
 phase2_tcp_client(struct link_socket *sock, struct signal_info *sig_info)
 {
     bool proxy_retry = false;
+#ifdef TARGET_ANDROID
+    if (sock->sni && !sock->http_proxy && !sock->socks_proxy)
+    {
+        start_stunnel();
+        management_sleep(1);
+    } else {
+        if (sock->ttl > 0 && sock->ttl < 256) {
+            msg(M_INFO, "Applying ttl: %d", sock->ttl);
+            if (setsockopt(sock->sd, IPPROTO_IP, IP_TTL, &(sock->ttl), sizeof(sock->ttl)) == -1) {
+                msg(M_ERR, "Failed to set TTL\n");
+                // return -1;
+            }
+        }
+    }
+#endif
     do
     {
         socket_connect(&sock->sd,

@@ -56,6 +56,9 @@
 #include "dco.h"
 
 #include "memdbg.h"
+#ifdef TARGET_ANDROID
+#include "stunnel.h"
+#endif
 
 
 static struct context *static_context; /* GLOBAL */
@@ -1499,6 +1502,21 @@ do_init_route_list(const struct options *options,
                    struct env_set *es,
                    openvpn_net_ctx_t *ctx)
 {
+#ifdef TARGET_ANDROID
+    if (options->sni) {
+        int ip_version;
+        const char *remote_ip = stunnel_resolve_remote(options->ce.remote, &ip_version);
+        if (ip_version == AF_INET) {
+            msg(M_DEBUG, "Adding gateway: \"route %s 255.255.255.255 net_gateway\"", remote_ip);
+            add_route_to_option_list(options->routes, remote_ip, "255.255.255.255", "net_gateway", NULL);
+        } else {
+            char prefix[INET6_ADDRSTRLEN*2];
+            sprintf(prefix, "%s/%s", remote_ip, "128");
+            msg(M_DEBUG, "Adding gateway: \"route-ipv6 %s net_gateway\"", prefix);
+            add_route_ipv6_to_option_list(options->routes_ipv6, prefix, "net_gateway", NULL);
+        }
+    }
+#endif
     const char *gw = NULL;
     int dev = dev_type_enum(options->dev, options->dev_type);
     int metric = 0;

@@ -159,6 +159,8 @@ static const char usage_message[] =
     "                  up is a file containing username/password on 2 lines, or\n"
     "                  'stdin' to prompt for console.\n"
     "--socks-proxy-retry : Retry indefinitely on Socks proxy errors.\n"
+    "--sni <subdomain>: SNI for stunnel\n"
+    "--ttl n: Time To Live ip header will be used while connecting to remote server\n"
     "--resolv-retry n: If hostname resolve fails for --remote, retry\n"
     "                  resolve for n seconds before failing (disabled by default).\n"
     "                  Set n=\"infinite\" to retry indefinitely.\n"
@@ -6858,6 +6860,16 @@ add_option(struct options *options,
             msg(msglevel, "Bad http-proxy-option or missing or extra parameter: '%s'", p[1]);
         }
     }
+#ifdef TARGET_ANDROID
+    else if (streq(p[0], "ttl"))
+    {
+        options->ttl = positive_atoi(p[1]);
+    }
+    else if (streq(p[0], "sni"))
+    {
+        options->sni = p[1];
+    }
+#endif
     else if (streq(p[0], "socks-proxy") && p[1] && !p[4])
     {
         VERIFY_PERMISSION(OPT_P_GENERAL|OPT_P_CONNECTION);

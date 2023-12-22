@@ -244,6 +244,10 @@ struct link_socket
 #ifdef ENABLE_DEBUG
     int gremlin; /* --gremlin bits */
 #endif
+#ifdef TARGET_ANDROID
+    int ttl;
+    const char* sni;
+#endif
 };
 
 /*
