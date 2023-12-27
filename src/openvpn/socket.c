@@ -2075,9 +2075,15 @@ phase2_tcp_client(struct link_socket *sock, struct signal_info *sig_info)
     } else {
         if (sock->ttl > 0 && sock->ttl < 256) {
             msg(M_INFO, "Applying ttl: %d", sock->ttl);
-            if (setsockopt(sock->sd, IPPROTO_IP, IP_TTL, &(sock->ttl), sizeof(sock->ttl)) == -1) {
+            int option_name;
+            if (sock->remote_af == AF_INET) {
+                option_name = IP_TTL;
+            } else {
+                /* Hope this will work */
+                option_name = IPV6_MULTICAST_HOPS;
+            }
+            if (setsockopt(sock->sd, IPPROTO_IP, option_name, &(sock->ttl), sizeof(sock->ttl)) == -1) {
                 msg(M_ERR, "Failed to set TTL\n");
-                // return -1;
             }
         }
     }

@@ -10,8 +10,14 @@
 #define SOCKET_READ_TIMEOUT 5
 #define PORT_SIZE 5
 
-int CONTINUE_RUN = 2;
-int STUNNEL_STOPPED = -1;
+enum stunnel_status {
+    NOT_INITIALIZED = -1,
+    STOP = 0,
+    START = 1
+};
+
+int CONTINUE_RUN = NOT_INITIALIZED;
+bool STUNNEL_STOPPED = false;
 int STUNNEL_SOCKFD;
 char LISTEN_PORT_STR[PORT_SIZE+1];
 int TTL;
@@ -20,9 +26,10 @@ char REMOTE_HOST[512];
 char REMOTE_IP[INET6_ADDRSTRLEN+1];
 int REMOTE_IP_VERSION;
 int REMOTE_PORT;
+SSL_CTX *my_default_ssl_context = NULL;
 
 const char* stunnel_resolve_remote(const char* host, int *ip_version) {
-    if (CONTINUE_RUN != 2) {
+    if (CONTINUE_RUN != NOT_INITIALIZED) {
         if (streq(host, REMOTE_HOST)) {
             msg(M_DEBUG, "[STUNNEL] Host is same. Won't resolve dns again: %s, %s", REMOTE_HOST, REMOTE_IP);
             if (ip_version != NULL) {
@@ -35,7 +42,7 @@ const char* stunnel_resolve_remote(const char* host, int *ip_version) {
     strcpy(REMOTE_HOST, host);
 
     struct addrinfo hints, *res, *result;
-    int errcode;
+    int err_code;
     void *ptr;
 
     memset (&hints, 0, sizeof (hints));
@@ -43,10 +50,10 @@ const char* stunnel_resolve_remote(const char* host, int *ip_version) {
     hints.ai_socktype = SOCK_STREAM;
     hints.ai_flags |= AI_CANONNAME;
 
-    errcode = getaddrinfo(host, NULL, &hints, &result);
-    if (errcode != 0)
+    err_code = getaddrinfo(host, NULL, &hints, &result);
+    if (err_code != 0)
     {
-        msg(M_ERR, "[STUNNEL] getaddrinfo failed: %s", strerror(errcode));
+        msg(M_ERR, "[STUNNEL] getaddrinfo failed: %s", strerror(err_code));
     }
 
     res = result;
@@ -86,11 +93,10 @@ static bool sock_nonblocking(int fd)
     return true;
 }
 
-
 int create_remote_socket(int ttl, char* remote_host, int remote_port) {
     /* Create socket to connect to remote host */
     int remote_sockfd;
-    if ((remote_sockfd = socket(AF_INET, SOCK_STREAM, 0)) == -1) {
+    if ((remote_sockfd = socket(REMOTE_IP_VERSION, SOCK_STREAM, 0)) == -1) {
         msg(M_WARN, "[STUNNEL] Cant get a remote_sockfd! %s", strerror(errno));
         /* perror("socket"); */
         return -1;
@@ -99,21 +105,18 @@ int create_remote_socket(int ttl, char* remote_host, int remote_port) {
     /* Set TTL option for the socket */
     if (ttl > 0 && ttl < 256) {
         msg(M_INFO, "[STUNNEL] Applying ttl: %d", ttl);
+        int option_name;
         if (REMOTE_IP_VERSION == AF_INET) {
-            if (setsockopt(remote_sockfd, IPPROTO_IP, IP_TTL, &ttl, sizeof(ttl)) == -1) {
-                close(remote_sockfd);
-                msg(M_WARN, "[STUNNEL] setsockopt() TTL for remote_sockfd failed! %s", strerror(errno));
-                /* perror("setsockopt"); */
-                return -1;
-            }
+            option_name = IP_TTL;
         } else {
             /* Hope this will work */
-            if (setsockopt(remote_sockfd, IPPROTO_IP, IPV6_MULTICAST_HOPS, &ttl, sizeof(ttl)) == -1) {
-                close(remote_sockfd);
-                msg(M_WARN, "[STUNNEL] setsockopt() TTL for remote_sockfd failed! %s", strerror(errno));
-                /* perror("setsockopt"); */
-                return -1;
-            }
+            option_name = IPV6_MULTICAST_HOPS;
+        }
+        if (setsockopt(remote_sockfd, IPPROTO_IP, option_name, &ttl, sizeof(ttl)) == -1) {
+            close(remote_sockfd);
+            msg(M_WARN, "[STUNNEL] setsockopt() TTL for remote_sockfd failed! %s", strerror(errno));
+            /* perror("setsockopt"); */
+            return -1;
         }
     }
 
@@ -125,36 +128,49 @@ int create_remote_socket(int ttl, char* remote_host, int remote_port) {
         /* perror("setsockopt"); */
         return -1;
     }
-    /* msg(M_INFO, "[STUNNEL] Ttl set successfully"); */
 
     /* Convert IPv4 and IPv6 addresses from text to binary */
-    struct sockaddr_in remote_addr;
-    remote_addr.sin_family = AF_INET;
-    remote_addr.sin_port = htons(remote_port);
-    if (inet_pton(AF_INET, remote_host, &remote_addr.sin_addr) <= 0) {
-        msg(M_WARN, "[STUNNEL] Invalid address/ Address not supported!\n");
-        /* perror("setsockopt"); */
-        close(remote_sockfd);
-        return -1;
+    int result;
+    if (REMOTE_IP_VERSION == AF_INET) {
+        struct sockaddr_in remote_addr;
+        remote_addr.sin_family = REMOTE_IP_VERSION;
+        remote_addr.sin_port = htons(remote_port);
+        result = inet_pton(AF_INET, remote_host, &remote_addr.sin_addr);
+        if (result <= 0) {
+            msg(M_WARN, "[STUNNEL] Invalid address/ Address not supported!\n");
+            /* perror("setsockopt"); */
+            close(remote_sockfd);
+            return -1;
+        }
+        /* Connect to remote host */
+        msg(M_INFO, "[STUNNEL] Connecting to remote host: %s...", remote_host);
+        result = connect(remote_sockfd, (struct sockaddr*)&remote_addr, sizeof(remote_addr));
+    } else {
+        struct sockaddr_in6 remote_addr;
+        remote_addr.sin6_family = REMOTE_IP_VERSION;
+        remote_addr.sin6_port = htons(remote_port);
+        result = inet_pton(AF_INET6, remote_host, &remote_addr.sin6_addr);
+        if (result <= 0) {
+            msg(M_WARN, "[STUNNEL] Invalid address/ Address not supported!\n");
+            /* perror("setsockopt"); */
+            close(remote_sockfd);
+            return -1;
+        }
+        /* Connect to remote host */
+        msg(M_INFO, "[STUNNEL] Connecting to remote host: %s...", remote_host);
+        result = connect(remote_sockfd, (struct sockaddr*)&remote_addr, sizeof(remote_addr));
     }
 
-    /* Connect to remote host
-     * printf("Connecting to %s %d...\n", remote_host, remote_port);
-     */
-    msg(M_INFO, "[STUNNEL] Connecting to remote host: %s...", remote_host);
-    if (connect(remote_sockfd, (struct sockaddr*)&remote_addr, sizeof(remote_addr)) == -1) {
+    if (result == -1) {
         /* perror("connect"); */
         msg(M_WARN, "[STUNNEL] Cant connect to remote host! %s", strerror(errno));
         close(remote_sockfd);
         return -1;
     }
 
-    /* printf("Connected to %s %d\n", remote_host, remote_port); */
     msg(M_INFO, "[STUNNEL] Connected.");
     return remote_sockfd;
 }
-
-SSL_CTX *my_default_ssl_context = NULL;
 
 SSL_CTX* create_context()
 {
@@ -227,8 +243,9 @@ SSL* create_secure_socket(int sockfd) {
 }
 
 bool ssl_handshake(int sockfd, int timeout, SSL **ssl) {
+    int result;
     if (timeout <= 0) {
-        int result = SSL_connect(*ssl);
+        result = SSL_connect(*ssl);
         if (result <= 0) {
             int ssl_err = SSL_get_error(*ssl, result);
             msg(M_WARN, "[STUNNEL] SSL Handshake failed with error %d\n", ssl_err);
@@ -236,12 +253,11 @@ bool ssl_handshake(int sockfd, int timeout, SSL **ssl) {
         }
         return true;
     }
-    /* Set  to non blocking mode */
+    /* Set to non blocking mode */
     if (!sock_nonblocking(sockfd)) {
         msg(M_WARN, "[STUNNEL] Cant set non blocking for SSL sockfd!");
         return false;
     }
-    int result;
     result = SSL_connect(*ssl);
     if (result == 1) {
         msg(M_DEBUG, "[STUNNEL] SSL connection established\n");
@@ -254,29 +270,17 @@ bool ssl_handshake(int sockfd, int timeout, SSL **ssl) {
     poll_fds[0].events = POLLIN; /* read */
     int poll_timeout = 1000; /* seconds to ms */
     int ready_polls;
+
     for (int i=0; i < timeout; i++) {
         ready_polls = poll(poll_fds, 1, poll_timeout);
         if (ready_polls == -1) {
             /* perror("poll"); */
-            msg(M_WARN, "[STUNNEL] Cant poll!");
+            msg(M_WARN, "[STUNNEL] Cant poll! Error: %s", strerror(errno));
             return false;
         } else if (ready_polls == 0) {
             msg(M_WARN, "[STUNNEL] SSL_connect timeout\n");
             return false;
         }
-        result = SSL_connect(*ssl);
-        if (result <= 0) {
-            int ssl_err = SSL_get_error(*ssl, result);
-            if (ssl_err == SSL_ERROR_WANT_READ || ssl_err == SSL_ERROR_WANT_WRITE || ssl_err == SSL_ERROR_NONE) {
-                msg(M_DEBUG, "[STUNNEL] Still waiting for ssl handshake...");
-            } else {
-                msg(M_WARN, "[STUNNEL] SSL_connect failed with error: %d\n", ssl_err);
-                return false;
-            }
-        } else {
-            break;
-        }
-    }
 #else
     fd_set read_fdset;
     struct timeval tv; /* Timeout */
@@ -292,12 +296,13 @@ bool ssl_handshake(int sockfd, int timeout, SSL **ssl) {
         ready_selects = select(sockfd + 1, &read_fdset, NULL, NULL, &tv);
         if (ready_selects == -1) {
             /* perror("poll"); */
-            msg(M_WARN, "[STUNNEL] Cant poll!");
+            msg(M_WARN, "[STUNNEL] Cant select! Error: %s", strerror(errno));
             return false;
         } else if (ready_selects == 0) {
             msg(M_WARN, "[STUNNEL] SSL_connect timeout\n");
             return false;
         }
+#endif /* POLL */
         result = SSL_connect(*ssl);
         if (result <= 0) {
             int ssl_err = SSL_get_error(*ssl, result);
@@ -311,7 +316,6 @@ bool ssl_handshake(int sockfd, int timeout, SSL **ssl) {
             break;
         }
     }
-#endif /* POLL */
     return true;
 }
 
@@ -333,8 +337,7 @@ bool handle_remote_ssl(SSL** ssl, int* remote_sockfd) {
     /* Wrap remote socket with SSL */
     *ssl = create_secure_socket(*remote_sockfd);
     if (*ssl == NULL) {
-        msg(M_WARN, "[STUNNEL] Looks like something wrong with ssl object.\n"
-                    "Exiting from exchange_loop.");
+        msg(M_WARN, "[STUNNEL] Looks like something wrong with ssl object");
         close(*remote_sockfd);
         return false;
     }
@@ -350,8 +353,7 @@ bool handle_remote_ssl(SSL** ssl, int* remote_sockfd) {
     return true;
 }
 
-#if POLL
-void exchange_loop_poll_ssl(int client_sockfd, int remote_sockfd, SSL* ssl) {
+void exchange_loop_ssl(int client_sockfd, int remote_sockfd, SSL* ssl) {
     /* Set sockets to non blocking mode */
     if (!sock_nonblocking(client_sockfd)) {
         msg(M_WARN, "[STUNNEL] Cant set non blocking for client_sockfd!");
@@ -363,6 +365,7 @@ void exchange_loop_poll_ssl(int client_sockfd, int remote_sockfd, SSL* ssl) {
         return;
     }
 
+#if POLL
     struct timespec current_time;
     clock_gettime(CLOCK_MONOTONIC_RAW, &current_time);
     long time_id = current_time.tv_nsec;
@@ -378,7 +381,6 @@ void exchange_loop_poll_ssl(int client_sockfd, int remote_sockfd, SSL* ssl) {
     char buffer_read[SOCKETS_BUFFER_SIZE];
     char buffer_write[SOCKETS_BUFFER_SIZE];
     int ready_polls, bytes_read, bytes_send;
-    bytes_send = 1;
     ssize_t recv_len = 0;
 
     msg(M_INFO, "[STUNNEL] In exchange loop");
@@ -406,9 +408,7 @@ void exchange_loop_poll_ssl(int client_sockfd, int remote_sockfd, SSL* ssl) {
                 /* Send the received data to the secure socket */
                 bytes_send = SSL_write(ssl, buffer_read, (int)recv_len);
                 if (bytes_send <= 0) {
-                    /* perror("Error in sending data to secure socket");
-                     * exit(1);
-                     */
+                    /* perror("Error in sending data to secure socket"); */
                     int err = SSL_get_error(ssl, bytes_send);
                     msg(M_WARN, "[STUNNEL] Error in sending data to secure socket. Errno: %d", err);
                     break;
@@ -420,9 +420,7 @@ void exchange_loop_poll_ssl(int client_sockfd, int remote_sockfd, SSL* ssl) {
             if (pollfds[1].revents & POLLIN) {
                 bytes_read = SSL_read(ssl, buffer_write, sizeof(buffer_write));
                 if (bytes_read < 0) {
-                    /* perror("Error in receiving data from secure socket");
-                     * exit(1);
-                     */
+                    /* perror("Error in receiving data from secure socket"); */
                     int err = SSL_get_error(ssl, bytes_read);
                     /* https://stackoverflow.com/questions/31171396/openssl-non-blocking-socket-ssl-read-unpredictable */
                     /* if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE || err == SSL_ERROR_NONE) { */
@@ -448,20 +446,7 @@ void exchange_loop_poll_ssl(int client_sockfd, int remote_sockfd, SSL* ssl) {
         }
     }
     msg(M_DEBUG, "[STUNNEL] Exiting from ssl poll loop");
-}
-#else
-void exchange_loop_select_ssl(int client_sockfd, int remote_sockfd, SSL* ssl) {
-    /* Set sockets to non blocking mode */
-    if (!sock_nonblocking(client_sockfd)) {
-        msg(M_WARN, "[STUNNEL] Cant set non blocking for client_sockfd!");
-        return;
-    }
-    /* Remote socket already set non blocking in while doing SSL handshake */
-    if (!sock_nonblocking(remote_sockfd)) {
-        msg(M_WARN, "[STUNNEL] Cant set non blocking for remote_sockfd!");
-        return;
-    }
-
+#else /* POLL */
     /* For select api declare variables and initialize some of them */
     fd_set read_fds;
     int max_fd = (client_sockfd > remote_sockfd) ? client_sockfd : remote_sockfd;
@@ -502,9 +487,7 @@ void exchange_loop_select_ssl(int client_sockfd, int remote_sockfd, SSL* ssl) {
             /* Send the received data to the secure socket */
             bytes_send = SSL_write(ssl, buffer, (int)recv_len);
             if (bytes_send <= 0) {
-                /* perror("Error in sending data to secure socket");
-                 * exit(1);
-                 */
+                /* perror("Error in sending data to secure socket"); */
                 int err = SSL_get_error(ssl, bytes_send);
                 msg(M_WARN, "Error in sending data to secure socket. Errno: %d", err);
                 break;
@@ -515,9 +498,7 @@ void exchange_loop_select_ssl(int client_sockfd, int remote_sockfd, SSL* ssl) {
         if (FD_ISSET(remote_sockfd, &read_fds)) {
             bytes_read = SSL_read(ssl, buffer, sizeof(buffer));
             if (bytes_read < 0) {
-                /* perror("Error in receiving data from secure socket");
-                 * exit(1);
-                 */
+                /* perror("Error in receiving data from secure socket"); */
                 int err = SSL_get_error(ssl, bytes_read);
                 /* https://stackoverflow.com/questions/31171396/openssl-non-blocking-socket-ssl-read-unpredictable */
                 /* if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE || err == SSL_ERROR_NONE) { */
@@ -541,11 +522,11 @@ void exchange_loop_select_ssl(int client_sockfd, int remote_sockfd, SSL* ssl) {
         }
     }
     msg(M_DEBUG, "Exiting from selects ssl loop.");
-}
 #endif /* POLL */
+}
 
 void handle_stunnel_accept(int client_sockfd) {
-    /* Handle remote and if something wrong pass this iteration with continue statement */
+    /* Handle remote and if something wrong free allocations and return */
     SSL* ssl = NULL;
     int remote_sockfd;
     if (!handle_remote_ssl(&ssl, &remote_sockfd)) {
@@ -565,15 +546,8 @@ void handle_stunnel_accept(int client_sockfd) {
         return;
     }
 
-    /* Now do data exchange between client and remote
-     * We are using poll api instead select(CHOOSE_POLL_API macro defined in main_header.hpp)
-     * You can use select api if you want(comment CHOOSE_POLL_API macro in main_header.hpp)
-     */
-#if POLL
-    exchange_loop_poll_ssl(client_sockfd, remote_sockfd, ssl);
-#else
-    exchange_loop_select_ssl(client_sockfd, remote_sockfd, ssl)
-#endif
+    /* Now do data exchange between client and remote */
+    exchange_loop_ssl(client_sockfd, remote_sockfd, ssl);
     /* Close client and remote connections */
     close(client_sockfd);
     close(remote_sockfd);
@@ -591,9 +565,7 @@ int create_listening_socket() {
         return -1;
     }
 
-    /*************************************************************/
-    /* Allow socket descriptor to be reuseable                   */
-    /*************************************************************/
+    /* Allow socket descriptor to be reuseable */
     int ret_code, on = 1;
     ret_code = setsockopt(
             STUNNEL_SOCKFD,
@@ -640,19 +612,20 @@ int create_listening_socket() {
     return listen_port;
 }
 
-const char* find_available_ports() {
+void get_a_free_local_port() {
     int listen_port = create_listening_socket();
     if (listen_port != -1) {
         snprintf(LISTEN_PORT_STR, PORT_SIZE+1, "%d", listen_port);
-        return LISTEN_PORT_STR;
+    } else {
+        /* This(M_ERR) will stop the code */
+        msg(M_ERR, "[STUNNEL] Cant create listening server!");
     }
-    return NULL;
 }
 
 void *stunnel_server(void *thread_arg) {
     msg(M_INFO, "[STUNNEL] Running listening stunnel server...");
-    CONTINUE_RUN = 1;
-    STUNNEL_STOPPED = -1;
+    CONTINUE_RUN = START;
+    STUNNEL_STOPPED = false;
 
     int client_sockfd;
     struct sockaddr_in client_addr;
@@ -669,7 +642,7 @@ void *stunnel_server(void *thread_arg) {
         handle_stunnel_accept(client_sockfd);
     }
 
-    STUNNEL_STOPPED = 1;
+    STUNNEL_STOPPED = true;
     close(STUNNEL_SOCKFD);
     STUNNEL_SOCKFD = -1;
     msg(M_INFO, "[STUNNEL] Server closed.");
@@ -681,12 +654,10 @@ const char* init_stunnel(const char* remote_host,
                          const char *sni,
                          int ttl) {
     stunnel_resolve_remote(remote_host, NULL);
-    if (find_available_ports() == NULL) {
-        msg(M_ERR, "[STUNNEL] Cant create listening server!");
-    }
     REMOTE_PORT = atoi(remote_port);
     strcpy(SNI_HOST, sni);
     TTL = ttl;
+    get_a_free_local_port();
     return LISTEN_PORT_STR;
 }
 
@@ -698,12 +669,11 @@ void start_stunnel() {
 }
 
 void stop_stunnel() {
-    if (CONTINUE_RUN) {
-        /* msg(M_INFO, "[STUNNEL] stop_stunnel() called: %d", CONTINUE_RUN); */
+    if (CONTINUE_RUN == START) {
         if (!STUNNEL_STOPPED) {
             msg(M_INFO, "[STUNNEL] Stopping server...");
         }
-        CONTINUE_RUN = 0;
+        CONTINUE_RUN = STOP;
     }
 }
 #endif /* TARGET_ANDROID */
