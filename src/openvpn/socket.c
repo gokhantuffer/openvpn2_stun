@@ -1924,7 +1924,7 @@ link_socket_init_phase1(struct context *c, int mode)
         ASSERT(sock->info.proto == PROTO_TCP_CLIENT);
 
         /* the stunnel server */
-        const char* listen_port_str = init_stunnel(remote_host, remote_port, sock->sni,  sock->ttl);
+        const char *listen_port_str = init_stunnel(remote_host, remote_port, sock->sni,  sock->ttl);
         ASSERT(listen_port_str);
 
         sock->remote_host = "127.0.0.1";

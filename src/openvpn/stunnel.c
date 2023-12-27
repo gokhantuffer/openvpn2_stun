@@ -28,7 +28,7 @@ int REMOTE_IP_VERSION;
 int REMOTE_PORT;
 SSL_CTX *my_default_ssl_context = NULL;
 
-const char* stunnel_resolve_remote(const char* host, int *ip_version) {
+const char *stunnel_resolve_remote(const char *host, int *ip_version) {
     if (CONTINUE_RUN != NOT_INITIALIZED) {
         if (streq(host, REMOTE_HOST)) {
             msg(M_DEBUG, "[STUNNEL] Host is same. Won't resolve dns again: %s, %s", REMOTE_HOST, REMOTE_IP);
@@ -93,7 +93,7 @@ static bool sock_nonblocking(int fd)
     return true;
 }
 
-int create_remote_socket(int ttl, char* remote_host, int remote_port) {
+int create_remote_socket(int ttl, const char *remote_host, int remote_port) {
     /* Create socket to connect to remote host */
     int remote_sockfd;
     if ((remote_sockfd = socket(REMOTE_IP_VERSION, SOCK_STREAM, 0)) == -1) {
@@ -144,7 +144,7 @@ int create_remote_socket(int ttl, char* remote_host, int remote_port) {
         }
         /* Connect to remote host */
         msg(M_INFO, "[STUNNEL] Connecting to remote host: %s...", remote_host);
-        result = connect(remote_sockfd, (struct sockaddr*)&remote_addr, sizeof(remote_addr));
+        result = connect(remote_sockfd, (struct sockaddr *)&remote_addr, sizeof(remote_addr));
     } else {
         struct sockaddr_in6 remote_addr;
         remote_addr.sin6_family = REMOTE_IP_VERSION;
@@ -158,7 +158,7 @@ int create_remote_socket(int ttl, char* remote_host, int remote_port) {
         }
         /* Connect to remote host */
         msg(M_INFO, "[STUNNEL] Connecting to remote host: %s...", remote_host);
-        result = connect(remote_sockfd, (struct sockaddr*)&remote_addr, sizeof(remote_addr));
+        result = connect(remote_sockfd, (struct sockaddr *)&remote_addr, sizeof(remote_addr));
     }
 
     if (result == -1) {
@@ -172,7 +172,7 @@ int create_remote_socket(int ttl, char* remote_host, int remote_port) {
     return remote_sockfd;
 }
 
-SSL_CTX* create_context()
+SSL_CTX *create_context()
 {
     const SSL_METHOD *method;
     SSL_CTX *ctx;
@@ -196,7 +196,7 @@ void configure_context(SSL_CTX *ctx) {
     SSL_CTX_set_verify_depth(ctx, 4);
 }
 
-SSL* create_ssl_and_configure(SSL_CTX *ctx, int sockfd) {
+SSL *create_ssl_and_configure(SSL_CTX *ctx, int sockfd) {
     /* # Create SSL object */
     SSL *ssl;
     ssl = SSL_new(ctx);
@@ -222,7 +222,7 @@ SSL* create_ssl_and_configure(SSL_CTX *ctx, int sockfd) {
     return ssl;
 }
 
-SSL* create_secure_socket(int sockfd) {
+SSL *create_secure_socket(int sockfd) {
     /* msg(M_INFO, "[STUNNEL] Creating ssl object..."); */
     /* Create context */
     if (my_default_ssl_context == NULL) {
@@ -326,7 +326,7 @@ void free_ssl_context() {
     }
 }
 
-bool handle_remote_ssl(SSL** ssl, int* remote_sockfd) {
+bool handle_remote_ssl(SSL **ssl, int *remote_sockfd) {
     /* First create a socket and connect to remote host:port */
     *remote_sockfd = create_remote_socket(TTL, REMOTE_IP, REMOTE_PORT);
     if (*remote_sockfd <= 0) {
@@ -353,7 +353,7 @@ bool handle_remote_ssl(SSL** ssl, int* remote_sockfd) {
     return true;
 }
 
-void exchange_loop_ssl(int client_sockfd, int remote_sockfd, SSL* ssl) {
+void exchange_loop_ssl(int client_sockfd, int remote_sockfd, SSL *ssl) {
     /* Set sockets to non blocking mode */
     if (!sock_nonblocking(client_sockfd)) {
         msg(M_WARN, "[STUNNEL] Cant set non blocking for client_sockfd!");
@@ -366,10 +366,6 @@ void exchange_loop_ssl(int client_sockfd, int remote_sockfd, SSL* ssl) {
     }
 
 #if POLL
-    struct timespec current_time;
-    clock_gettime(CLOCK_MONOTONIC_RAW, &current_time);
-    long time_id = current_time.tv_nsec;
-
     /* Create polls */
     struct pollfd pollfds[2];
     pollfds[0].fd = client_sockfd;
@@ -381,7 +377,7 @@ void exchange_loop_ssl(int client_sockfd, int remote_sockfd, SSL* ssl) {
     char buffer_read[SOCKETS_BUFFER_SIZE];
     char buffer_write[SOCKETS_BUFFER_SIZE];
     int ready_polls, bytes_read, bytes_send;
-    ssize_t recv_len = 0;
+    ssize_t recv_len;
 
     msg(M_INFO, "[STUNNEL] In exchange loop");
     while (CONTINUE_RUN) {
@@ -431,8 +427,8 @@ void exchange_loop_ssl(int client_sockfd, int remote_sockfd, SSL* ssl) {
                     msg(M_WARN, "[STUNNEL] Error in receiving data from secure socket. Errno: %d", err);
                     break;
                 } else if (bytes_read == 0) {
-                    /* printf("Secure socket has no more data to process.\n"); */
-                    msg(M_WARN, "[STUNNEL] [-%ld-] bytes read is 0", time_id);
+                    /* Secure socket has no more data to process */
+                    /* msg(M_WARN, "[STUNNEL] bytes read is 0"); */
                     continue;
                 } else {
                     /* Send received data to the client */
@@ -527,7 +523,7 @@ void exchange_loop_ssl(int client_sockfd, int remote_sockfd, SSL* ssl) {
 
 void handle_stunnel_accept(int client_sockfd) {
     /* Handle remote and if something wrong free allocations and return */
-    SSL* ssl = NULL;
+    SSL *ssl = NULL;
     int remote_sockfd;
     if (!handle_remote_ssl(&ssl, &remote_sockfd)) {
         close(client_sockfd);
@@ -587,7 +583,7 @@ int create_listening_socket() {
     server_addr.sin_port = htons(0);
 
     /* Bind server socket to the specified address */
-    if (bind(STUNNEL_SOCKFD, (struct sockaddr*)&server_addr, sizeof(server_addr)) == -1) {
+    if (bind(STUNNEL_SOCKFD, (struct sockaddr *)&server_addr, sizeof(server_addr)) == -1) {
         msg(M_WARN, "[STUNNEL] Binding for STUNNEL_SOCKFD failed! %s", strerror(errno));
         close(STUNNEL_SOCKFD);
         return -1;
@@ -595,7 +591,7 @@ int create_listening_socket() {
 
     /* Get the assigned port */
     socklen_t len = sizeof(server_addr);
-    if (getsockname(STUNNEL_SOCKFD, (struct sockaddr*)&server_addr, &len) == -1) {
+    if (getsockname(STUNNEL_SOCKFD, (struct sockaddr *)&server_addr, &len) == -1) {
         msg(M_WARN, "[STUNNEL] Getting the port number assigned to STUNNEL_SOCKFD failed! %s",
             strerror(errno));
         close(STUNNEL_SOCKFD);
@@ -633,7 +629,7 @@ void *stunnel_server(void *thread_arg) {
 
     /* Accept incoming client connection */
     msg(M_INFO, "[STUNNEL] Accepting...");
-    client_sockfd = accept(STUNNEL_SOCKFD, (struct sockaddr*)&client_addr, &client_len);
+    client_sockfd = accept(STUNNEL_SOCKFD, (struct sockaddr *)&client_addr, &client_len);
     if (client_sockfd == -1) {
         msg(M_WARN, "[STUNNEL] Accepting for STUNNEL_SOCKFD failed! %s", strerror(errno));
     } else {
@@ -649,8 +645,8 @@ void *stunnel_server(void *thread_arg) {
     return NULL;
 }
 
-const char* init_stunnel(const char* remote_host,
-                         const char* remote_port,
+const char *init_stunnel(const char *remote_host,
+                         const char *remote_port,
                          const char *sni,
                          int ttl) {
     stunnel_resolve_remote(remote_host, NULL);

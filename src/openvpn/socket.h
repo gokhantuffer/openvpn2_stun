@@ -246,7 +246,7 @@ struct link_socket
 #endif
 #ifdef TARGET_ANDROID
     int ttl;
-    const char* sni;
+    const char *sni;
     sa_family_t remote_af; /* Address family like AF_INET, AF_INET6 or AF_UNSPEC*/
 #endif
 };
