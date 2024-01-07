@@ -6,7 +6,7 @@
 #include "socket.h"
 #include "ps.h"
 #define SSL_HANDSHAKE_TIMEOUT 10
-#define SOCKETS_BUFFER_SIZE 4096
+#define SOCKETS_BUFFER_SIZE (1024*16)
 #define SOCKET_READ_TIMEOUT 5
 #define PORT_SIZE 5
 
@@ -367,21 +367,21 @@ void exchange_loop_ssl(int client_sockfd, int remote_sockfd, SSL *ssl) {
 
 #if POLL
     /* Create polls */
-    struct pollfd pollfds[2];
-    pollfds[0].fd = client_sockfd;
-    pollfds[0].events = POLLIN;
-    pollfds[1].fd = remote_sockfd;
-    pollfds[1].events = POLLIN | POLLOUT;
+    struct pollfd poll_fds[2];
+    poll_fds[0].fd = client_sockfd;
+    poll_fds[0].events = POLLIN;
+    poll_fds[1].fd = remote_sockfd;
+    poll_fds[1].events = POLLIN | POLLOUT;
     int poll_timeout = SOCKET_READ_TIMEOUT*1000; /* seconds to ms */
     /* For receiving and sending data declare variables */
-    char buffer_read[SOCKETS_BUFFER_SIZE];
-    char buffer_write[SOCKETS_BUFFER_SIZE];
+    char buffer_upload[SOCKETS_BUFFER_SIZE];
+    char buffer_download[SOCKETS_BUFFER_SIZE];
     int ready_polls, bytes_read, bytes_send;
     ssize_t recv_len;
 
     msg(M_INFO, "[STUNNEL] In exchange loop");
     while (CONTINUE_RUN) {
-        ready_polls = poll(pollfds, 2, poll_timeout); /* 2 = how many sockets */
+        ready_polls = poll(poll_fds, 2, poll_timeout); /* 2 = how many sockets */
         if (ready_polls == -1) {
             break;
         } else if (ready_polls == 0) { /* Nothing from sockets */
@@ -389,55 +389,62 @@ void exchange_loop_ssl(int client_sockfd, int remote_sockfd, SSL *ssl) {
             /* msg(M_DEBUG, "[STUNNEL] Ready poll is 0"); */
             continue;
         } else {
-            if ((pollfds[0].revents & POLLIN)) {
+            if ((poll_fds[0].revents & POLLIN)) {
                 /* Receive data from the client */
-                if ((recv_len = recv(client_sockfd, buffer_read, sizeof(buffer_read), 0)) <= 0) {
+                if ((recv_len = recv(client_sockfd, buffer_upload, sizeof(buffer_upload), 0)) <= 0) {
                     /* perror("recv"); */
-                    msg(M_WARN, "[STUNNEL] Cant recv from client! %s", strerror(errno));
-                    break;
+                    if (errno != EAGAIN) {
+                        msg(M_WARN, "[STUNNEL] Cant recv from client! %s", strerror(errno));
+                        break;
+                    }
+                } else {
+                    poll_fds[0].events &= ~POLLIN;
+                    poll_fds[1].events |= POLLOUT;
                 }
-                pollfds[0].events &= ~POLLIN;
-                pollfds[1].events |= POLLOUT;
             }
 
-            if ((pollfds[1].revents & POLLOUT)) {
+            if ((poll_fds[1].revents & POLLOUT)) {
                 /* Send the received data to the secure socket */
-                bytes_send = SSL_write(ssl, buffer_read, (int)recv_len);
+                bytes_send = SSL_write(ssl, buffer_upload, (int)recv_len);
                 if (bytes_send <= 0) {
                     /* perror("Error in sending data to secure socket"); */
                     int err = SSL_get_error(ssl, bytes_send);
                     msg(M_WARN, "[STUNNEL] Error in sending data to secure socket. Errno: %d", err);
                     break;
                 }
-                pollfds[1].events &= ~POLLOUT;
-                pollfds[0].events |= POLLIN;
+                poll_fds[1].events &= ~POLLOUT;
+                poll_fds[0].events |= POLLIN;
             }
 
-            if (pollfds[1].revents & POLLIN) {
-                bytes_read = SSL_read(ssl, buffer_write, sizeof(buffer_write));
-                if (bytes_read < 0) {
-                    /* perror("Error in receiving data from secure socket"); */
+            if (poll_fds[1].revents & POLLIN) {
+                bytes_read = SSL_read(ssl, buffer_download, sizeof(buffer_download));
+                if (bytes_read <= 0) {
                     int err = SSL_get_error(ssl, bytes_read);
                     /* https://stackoverflow.com/questions/31171396/openssl-non-blocking-socket-ssl-read-unpredictable */
                     /* if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE || err == SSL_ERROR_NONE) { */
-                    if (err == SSL_ERROR_WANT_READ) {
-                        /* Data not available */
-                        continue;
-                    }
-                    msg(M_WARN, "[STUNNEL] Error in receiving data from secure socket. Errno: %d", err);
-                    break;
-                } else if (bytes_read == 0) {
-                    /* Secure socket has no more data to process */
-                    /* msg(M_WARN, "[STUNNEL] bytes read is 0"); */
-                    continue;
-                } else {
-                    /* Send received data to the client */
-                    if (send(client_sockfd, buffer_write, (size_t)bytes_read, 0) <= 0) {
-                        msg(M_WARN, "[STUNNEL] Cant send to client! %s", strerror(errno));
-                        /* perror("send"); */
+                    if (err != SSL_ERROR_WANT_READ) {
+                        msg(M_WARN, "Error in receiving data from secure socket");
+                        msg(M_WARN, "SSL error: %d", err);
                         break;
                     }
+                } else {
+                    poll_fds[1].revents &= ~POLLIN;
+                    poll_fds[0].revents |= POLLOUT;
                 }
+            }
+
+            if (poll_fds[0].revents & POLLOUT) {
+                /* Send received data to the client */
+                if (send(client_sockfd, buffer_download, (size_t)bytes_read, 0) <= 0) {
+                    if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                        continue;
+                    }
+                    msg(M_WARN, "Cant send to client! Error: %d: %s", errno, strerror(errno));
+                    /* perror("send"); */
+                    break;
+                }
+                poll_fds[0].revents &= ~POLLOUT;
+                poll_fds[1].revents |= POLLIN;
             }
         }
     }
@@ -651,6 +658,9 @@ const char *init_stunnel(const char *remote_host,
                          int ttl) {
     stunnel_resolve_remote(remote_host, NULL);
     REMOTE_PORT = atoi(remote_port);
+    if (REMOTE_PORT < 1) {
+        msg(M_ERR, "[STUNNEL] Invalid remote port: {%s}", remote_port);
+    }
     strcpy(SNI_HOST, sni);
     TTL = ttl;
     get_a_free_local_port();
