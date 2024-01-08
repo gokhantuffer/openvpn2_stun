@@ -73,7 +73,7 @@ const char *stunnel_resolve_remote(const char *host, int *ip_version) {
 
         REMOTE_IP_VERSION = res->ai_family;
         inet_ntop(res->ai_family, ptr, REMOTE_IP, sizeof(REMOTE_IP));
-        msg(M_DEBUG,"[STUNNEL] IPv%d address: %s (%s)\n", res->ai_family == PF_INET6 ? 6 : 4,
+        msg(M_DEBUG, "[STUNNEL] IPv%d address: %s (%s)\n", res->ai_family == PF_INET6 ? 6 : 4,
             REMOTE_IP, res->ai_canonname);
         res = res->ai_next;
     }
@@ -423,8 +423,8 @@ void exchange_loop_ssl(int client_sockfd, int remote_sockfd, SSL *ssl) {
                     /* https://stackoverflow.com/questions/31171396/openssl-non-blocking-socket-ssl-read-unpredictable */
                     /* if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE || err == SSL_ERROR_NONE) { */
                     if (err != SSL_ERROR_WANT_READ) {
-                        msg(M_WARN, "Error in receiving data from secure socket");
-                        msg(M_WARN, "SSL error: %d", err);
+                        msg(M_WARN, "[STUNNEL] Error in receiving data from secure socket");
+                        msg(M_WARN, "[STUNNEL] SSL error: %d", err);
                         break;
                     }
                 } else {
@@ -439,7 +439,7 @@ void exchange_loop_ssl(int client_sockfd, int remote_sockfd, SSL *ssl) {
                     if (errno == EAGAIN || errno == EWOULDBLOCK) {
                         continue;
                     }
-                    msg(M_WARN, "Cant send to client! Error: %d: %s", errno, strerror(errno));
+                    msg(M_WARN, "[STUNNEL] Cant send to client! Error: %d: %s", errno, strerror(errno));
                     /* perror("send"); */
                     break;
                 }
@@ -460,7 +460,7 @@ void exchange_loop_ssl(int client_sockfd, int remote_sockfd, SSL *ssl) {
     int ready_selects, bytes_read, bytes_send;
     ssize_t recv_len;
 
-    msg(M_DEBUG, "In exchange loop");
+    msg(M_DEBUG, "[STUNNEL] In exchange loop");
     while (CONTINUE_RUN) {
         FD_ZERO(&read_fds);
         FD_SET(client_sockfd, &read_fds);
@@ -471,7 +471,7 @@ void exchange_loop_ssl(int client_sockfd, int remote_sockfd, SSL *ssl) {
         /* Wait for activity on either client or remote socket */
         if ((ready_selects = select(max_fd + 1, &read_fds, NULL, NULL, &tv)) == -1) {
             /* perror("select"); */
-            msg(M_WARN, "Cant select! %s", strerror(errno));
+            msg(M_WARN, "[STUNNEL] Cant select! %s", strerror(errno));
             break;
         }
 
@@ -483,7 +483,7 @@ void exchange_loop_ssl(int client_sockfd, int remote_sockfd, SSL *ssl) {
             /* Receive data from the client */
             if ((recv_len = recv(client_sockfd, buffer, sizeof(buffer), 0)) <= 0) {
                 /* perror("recv"); */
-                msg(M_WARN, "Cant recv from client! %s", strerror(errno));
+                msg(M_WARN, "[STUNNEL] Cant recv from client! %s", strerror(errno));
                 break;
             }
 
@@ -492,7 +492,7 @@ void exchange_loop_ssl(int client_sockfd, int remote_sockfd, SSL *ssl) {
             if (bytes_send <= 0) {
                 /* perror("Error in sending data to secure socket"); */
                 int err = SSL_get_error(ssl, bytes_send);
-                msg(M_WARN, "Error in sending data to secure socket. Errno: %d", err);
+                msg(M_WARN, "[STUNNEL] Error in sending data to secure socket. Errno: %d", err);
                 break;
             }
         }
@@ -509,7 +509,7 @@ void exchange_loop_ssl(int client_sockfd, int remote_sockfd, SSL *ssl) {
                     /* Data not available */
                     continue;
                 }
-                msg(M_WARN, "Error in receiving data from secure socket. Errno %d", err);
+                msg(M_WARN, "[STUNNEL] Error in receiving data from secure socket. Errno %d", err);
                 break;
             } else if (bytes_read == 0) {
                 /* printf("Secure socket has no more data to process.\n"); */
@@ -517,14 +517,14 @@ void exchange_loop_ssl(int client_sockfd, int remote_sockfd, SSL *ssl) {
             } else {
                 /* Send received data to the client */
                 if (send(client_sockfd, buffer, (size_t)bytes_read, 0) <= 0) {
-                    msg(M_WARN, "Cant send to client! %s", strerror(errno));
+                    msg(M_WARN, "[STUNNEL] Cant send to client! %s", strerror(errno));
                     /* perror("send"); */
                     break;
                 }
             }
         }
     }
-    msg(M_DEBUG, "Exiting from selects ssl loop.");
+    msg(M_DEBUG, "[STUNNEL] Exiting from select ssl loop.");
 #endif /* POLL */
 }
 
